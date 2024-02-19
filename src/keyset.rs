@@ -1,57 +1,95 @@
+use std::{convert::TryFrom, convert::TryInto};
 use std::time::{Duration, SystemTime};
 
-use base64::{decode_config, URL_SAFE_NO_PAD};
+use base64::Engine;
+use jwt_simple::prelude::*;
 use regex::Regex;
-use reqwest;
 use reqwest::Response;
-use ring::signature::{RsaPublicKeyComponents, RSA_PKCS1_2048_8192_SHA256};
-use serde::{
-    de::DeserializeOwned,
-    {Deserialize, Serialize},
-};
-use serde_json::Value;
+use serde::{de::DeserializeOwned, Deserialize};
 
 use crate::error::*;
-use crate::jwt::*;
 
-type HeaderBody = String;
-pub type Signature = String;
+#[derive(Debug, Deserialize)]
+pub struct JWK {
+    pub alg: String,
+    pub kid: String,
+    pub kty: String,
+    pub e: Option<String>,
+    pub n: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RSAPublicKeyInputs {
+    n: String,
+    e: String,
+}
+
+impl RSAPublicKeyInputs {
+    pub fn new(n: String, e: String) -> RSAPublicKeyInputs {
+        RSAPublicKeyInputs { n, e }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtKey {
-    #[serde(default)] // https://github.com/jfbilodeau/jwks-client/issues/1
-    pub e: String,
     pub kty: String,
     pub alg: Option<String>,
-    #[serde(default)] // https://github.com/jfbilodeau/jwks-client/issues/1
-    pub n: String,
     pub kid: String,
+    pub kind: JwtKeyKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum JwtKeyKind {
+    RSA(RSAPublicKeyInputs),
+    UnsupportedKty(String),
 }
 
 impl JwtKey {
-    pub fn new(kid: &str, n: &str, e: &str) -> JwtKey {
+    pub fn new(kid: &str, alg: String, key: RSAPublicKeyInputs) -> JwtKey {
         JwtKey {
-            e: e.to_owned(),
             kty: "JTW".to_string(),
-            alg: Some("RS256".to_string()),
-            n: n.to_owned(),
+            alg: Some(alg),
             kid: kid.to_owned(),
+            kind: JwtKeyKind::RSA(key),
         }
     }
-}
 
-impl Clone for JwtKey {
-    fn clone(&self) -> Self {
+    pub fn new_rsa256(kid: &str, n: &str, e: &str) -> JwtKey {
         JwtKey {
-            e: self.e.clone(),
-            kty: self.kty.clone(),
-            alg: self.alg.clone(),
-            n: self.n.clone(),
-            kid: self.kid.clone(),
+            kty: "JTW".to_string(),
+            alg: Some(RS256PublicKey::jwt_alg_name().to_string()),
+            kid: kid.to_owned(),
+            kind: JwtKeyKind::RSA(RSAPublicKeyInputs::new(n.to_owned(), e.to_owned())),
+        }
+    }
+
+    pub fn decoding_key(&self) -> Result<RSAPublicKeyInputs, Error> {
+        match &self.kind {
+            JwtKeyKind::RSA(key_inputs) => {
+                Ok(key_inputs.clone())
+            }
+            JwtKeyKind::UnsupportedKty(kty) => {
+                tracing::debug!("Unsupported key type: {}", kty);
+                Err(err("Unsupported key type", Type::Key))
+            }
         }
     }
 }
 
+impl TryFrom<JWK> for JwtKey {
+    type Error = Error;
+
+    fn try_from(JWK { kid, alg, kty, n, e }: JWK) -> Result<Self, Error> {
+        let kind = match (kty.as_ref(), n, e) {
+            ("RSA", Some(n), Some(e)) => JwtKeyKind::RSA(RSAPublicKeyInputs::new(n, e)),
+            ("RSA", _, _) => return Err(err("RSA key missing parameters", Type::Certificate)),
+            (_, _, _) => JwtKeyKind::UnsupportedKty(kty.clone()),
+        };
+        Ok(JwtKey { kty, kid, alg: Some(alg), kind })
+    }
+}
+
+#[derive(Debug)]
 pub struct KeyStore {
     key_url: String,
     keys: Vec<JwtKey>,
@@ -63,18 +101,17 @@ pub struct KeyStore {
 
 impl KeyStore {
     pub fn new() -> KeyStore {
-        let key_store = KeyStore {
+        KeyStore {
             key_url: "".to_owned(),
-            keys: vec![],
+            keys: Vec::new(),
             refresh_interval: 0.5,
             load_time: None,
             expire_time: None,
             refresh_time: None,
-        };
-
-        key_store
+        }
     }
 
+    #[tracing::instrument]
     pub async fn new_from(jkws_url: String) -> Result<KeyStore, Error> {
         let mut key_store = KeyStore::new();
 
@@ -85,6 +122,7 @@ impl KeyStore {
         Ok(key_store)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn clear_keys(&mut self) {
         self.keys.clear();
     }
@@ -93,6 +131,7 @@ impl KeyStore {
         &self.key_url
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn load_keys_from(&mut self, url: String) -> Result<(), Error> {
         self.key_url = url;
 
@@ -101,13 +140,15 @@ impl KeyStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn load_keys(&mut self) -> Result<(), Error> {
         #[derive(Deserialize)]
         pub struct JwtKeys {
-            pub keys: Vec<JwtKey>,
+            pub keys: Vec<JWK>,
         }
 
         let mut response = reqwest::get(&self.key_url).await.map_err(|_| err_con("Could not download JWKS"))?;
+        tracing::debug!("Response: {:?}", response);
 
         let load_time = SystemTime::now();
         self.load_time = Some(load_time);
@@ -124,11 +165,14 @@ impl KeyStore {
 
         let jwks = response.json::<JwtKeys>().await.map_err(|_| err_int("Failed to parse keys"))?;
 
-        jwks.keys.iter().for_each(|k| self.add_key(k));
+        for jwk in jwks.keys {
+            self.add_key(jwk.try_into()?);
+        }
 
         Ok(())
     }
 
+    #[tracing::instrument]
     fn cache_max_age(response: &mut Response) -> Result<u64, ()> {
         let header = response.headers().get("cache-control").ok_or(())?;
 
@@ -148,8 +192,9 @@ impl KeyStore {
     }
 
     /// Fetch a key by key id (KID)
+    #[tracing::instrument(skip(self))]
     pub fn key_by_id(&self, kid: &str) -> Option<&JwtKey> {
-        self.keys.iter().find(|k| k.kid == kid)
+        self.keys.iter().find(|key| key.kid == kid)
     }
 
     /// Number of keys in keystore
@@ -158,73 +203,111 @@ impl KeyStore {
     }
 
     /// Manually add a key to the keystore
-    pub fn add_key(&mut self, key: &JwtKey) {
-        self.keys.push(key.clone());
-    }
-
-    fn decode_segments(&self, token: &str) -> Result<(Header, Payload, Signature, HeaderBody), Error> {
-        let raw_segments: Vec<&str> = token.split(".").collect();
-        if raw_segments.len() != 3 {
-            return Err(err_inv("JWT does not have 3 segments"));
-        }
-
-        let header_segment = raw_segments[0];
-        let payload_segment = raw_segments[1];
-        let signature_segment = raw_segments[2].to_string();
-
-        let header = Header::new(decode_segment::<Value>(header_segment).or(Err(err_hea("Failed to decode header")))?);
-        let payload = Payload::new(decode_segment::<Value>(payload_segment).or(Err(err_pay("Failed to decode payload")))?);
-
-        let body = format!("{}.{}", header_segment, payload_segment);
-
-        Ok((header, payload, signature_segment, body))
-    }
-
-    pub fn decode(&self, token: &str) -> Result<Jwt, Error> {
-        let (header, payload, signature, _) = self.decode_segments(token)?;
-
-        Ok(Jwt::new(header, payload, signature))
-    }
-
-    pub fn verify_time(&self, token: &str, time: SystemTime) -> Result<Jwt, Error> {
-        let (header, payload, signature, body) = self.decode_segments(token)?;
-
-        if header.alg() != Some("RS256") {
-            return Err(err_inv("Unsupported algorithm"));
-        }
-
-        let kid = header.kid().ok_or(err_key("No key id"))?;
-
-        let key = self.key_by_id(kid).ok_or(err_key("JWT key does not exists"))?;
-
-        let e = decode_config(&key.e, URL_SAFE_NO_PAD).or(Err(err_cer("Failed to decode exponent")))?;
-        let n = decode_config(&key.n, URL_SAFE_NO_PAD).or(Err(err_cer("Failed to decode modulus")))?;
-
-        verify_signature(&e, &n, &body, &signature)?;
-
-        let jwt = Jwt::new(header, payload, signature);
-
-        if jwt.expired_time(time).unwrap_or(false) {
-            return Err(err_exp("Token expired"));
-        }
-        if jwt.early_time(time).unwrap_or(false) {
-            return Err(err_nbf("Too early to use token (nbf)"));
-        }
-
-        Ok(jwt)
+    #[tracing::instrument(skip(self))]
+    pub fn add_key(&mut self, key: JwtKey) {
+        self.keys.push(key);
     }
 
     /// Verify a JWT token.
     /// If the token is valid, it is returned.
     ///
     /// A token is considered valid if:
-    /// * Is well formed
+    /// * Is well-formed
     /// * Has a `kid` field that matches a public signature `kid
     /// * Signature matches public key
     /// * It is not expired
     /// * The `nbf` is not set to before now
-    pub fn verify(&self, token: &str) -> Result<Jwt, Error> {
-        self.verify_time(token, SystemTime::now())
+    #[tracing::instrument(skip(self))]
+    pub fn verify<CustomClaims: Serialize + DeserializeOwned>(&self, token: &str, validation: Option<VerificationOptions>) -> Result<JWTClaims<CustomClaims>, Error> {
+        let header = Token::decode_metadata(token).map_err(|e| {
+            tracing::debug!("failed to decode token: {}", e);
+            Error {
+                msg: "failed to decode token",
+                typ: Type::Invalid,
+            }
+        })?;
+
+        let kid = header.key_id().ok_or_else(|| err_key("No key id"))?;
+
+        let key = self.key_by_id(kid).ok_or_else(|| err_key("JWT key does not exists"))?;
+
+        if let Some(alg) = &key.alg {
+            if alg != header.algorithm() {
+                return Err(err("Token and its key have non-matching algorithms", Type::Header));
+            }
+        } else {
+            return Err(err("Token and its key have non-matching algorithms", Type::Header));
+        }
+        let rs256 = RS256PublicKey::jwt_alg_name();
+        let rs384 = RS384PublicKey::jwt_alg_name();
+        let rs512 = RS512PublicKey::jwt_alg_name();
+        let data = match &key.kind {
+            JwtKeyKind::RSA(key_inputs) => {
+                let n = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(key_inputs.n.as_str()).map_err(|e| {
+                    tracing::debug!("failed to decode n: {}", e);
+                    Error {
+                        msg: "failed to decode n",
+                        typ: Type::Key,
+                    }
+                })?;
+                let e = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(key_inputs.e.as_str()).map_err(|e| {
+                    tracing::debug!("failed to decode e: {}", e);
+                    Error {
+                        msg: "failed to decode e",
+                        typ: Type::Key,
+                    }
+                })?;
+                let alg = if let Some(alg) = &key.alg {
+                    alg
+                } else {
+                    return Err(err("Token and its key have non-matching algorithms", Type::Header));
+                };
+                match alg {
+                    _ if rs256 == alg => {
+                        let public_key = RS256PublicKey::from_components(n.as_ref(), e.as_ref()).unwrap();
+                        tracing::debug!("{}", public_key.to_pem().unwrap());
+                        let data = public_key.verify_token::<CustomClaims>(token, validation).map_err(|e| {
+                            tracing::debug!("failed to verify token: {}", e);
+                            Error {
+                                msg: "failed to verify token",
+                                typ: Type::Signature,
+                            }
+                        })?;
+                        Ok(data)
+                    }
+                    _ if rs384 == alg => {
+                        let public_key = RS384PublicKey::from_components(n.as_ref(), e.as_ref()).unwrap();
+                        let data = public_key.verify_token::<CustomClaims>(token, validation).map_err(|e| {
+                            tracing::debug!("failed to verify token: {}", e);
+                            Error {
+                                msg: "failed to verify token",
+                                typ: Type::Signature,
+                            }
+                        })?;
+                        Ok(data)
+                    }
+                    _ if rs512 == alg => {
+                        let public_key = RS512PublicKey::from_components(n.as_ref(), e.as_ref()).unwrap();
+                        let data = public_key.verify_token::<CustomClaims>(token, validation).map_err(|e| {
+                            tracing::debug!("failed to verify token: {}", e);
+                            Error {
+                                msg: "failed to verify token",
+                                typ: Type::Signature,
+                            }
+                        })?;
+                        Ok(data)
+                    }
+                    _ => {
+                        Err(err("Unsupported algorithm", Type::Key))
+                    }
+                }
+            }
+            JwtKeyKind::UnsupportedKty(kty) => {
+                tracing::error!("Unsupported key type: {}", kty);
+                Err(err("Unsupported key type", Type::Key))
+            },
+        }?;
+        Ok(data)
     }
 
     /// Time at which the keys were last refreshed
@@ -236,10 +319,7 @@ impl KeyStore {
     ///
     /// None if keys do not have an expiration time
     pub fn keys_expired(&self) -> Option<bool> {
-        match self.expire_time {
-            Some(expire) => Some(expire <= SystemTime::now()),
-            None => None,
-        }
+        self.expire_time.map(|expire| expire <= SystemTime::now())
     }
 
     /// Specifies the interval (as a fraction) when the key store should refresh it's key.
@@ -293,21 +373,8 @@ impl KeyStore {
     }
 }
 
-fn verify_signature(e: &Vec<u8>, n: &Vec<u8>, message: &str, signature: &str) -> Result<(), Error> {
-    let pkc = RsaPublicKeyComponents { e, n };
-
-    let message_bytes = &message.as_bytes().to_vec();
-    let signature_bytes = decode_config(&signature, URL_SAFE_NO_PAD).or(Err(err_sig("Could not base64 decode signature")))?;
-
-    let result = pkc.verify(&RSA_PKCS1_2048_8192_SHA256, &message_bytes, &signature_bytes);
-
-    result.or(Err(err_cer("Signature does not match certificate")))
-}
-
-fn decode_segment<T: DeserializeOwned>(segment: &str) -> Result<T, Error> {
-    let raw = decode_config(segment, base64::URL_SAFE_NO_PAD).or(Err(err_inv("Failed to decode segment")))?;
-    let slice = String::from_utf8_lossy(&raw);
-    let decoded: T = serde_json::from_str(&slice).or(Err(err_inv("Failed to decode segment")))?;
-
-    Ok(decoded)
+impl Default for KeyStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }

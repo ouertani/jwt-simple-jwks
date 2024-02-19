@@ -1,5 +1,7 @@
+pub use error::Error;
+pub use keyset::{JwtKey, KeyStore};
+
 pub mod error;
-pub mod jwt;
 pub mod keyset;
 
 ///JWKS client library [![Build Status](https://travis-ci.com/jfbilodeau/jwks-client.svg?branch=master)](https://travis-ci.com/jfbilodeau/jwks-client) [![License:MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,28 +16,24 @@ pub mod keyset;
 ///* Automatically refresh keys in background
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
+    use jwt_simple::prelude::*;
     use serde::{Deserialize, Serialize};
 
-    use crate::error::{Error, Type};
     use crate::keyset::{JwtKey, KeyStore};
 
-    //    const IAT: u64 = 200;
+    // const PRIVATE_KEY: &str = include_str!("../test/private.pem");
     const TIME_NBF: u64 = 300;
     const TIME_SAFE: u64 = 400;
     const TIME_EXP: u64 = 500;
 
-    fn time_nbf() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::new(TIME_NBF - 1, 0)
-    }
-
-    fn time_safe() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::new(TIME_SAFE, 0)
-    }
-
-    fn time_exp() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::new(TIME_EXP + 1, 0)
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct CustomClaims {
+        auth_time: i64,
+        name: String,
+        user_id: String,
+        email: String,
     }
 
     pub const KEY_URL: &str = "https://raw.githubusercontent.com/jfbilodeau/jwks-client/0.1.8/test/test-jwks.json";
@@ -52,16 +50,45 @@ mod tests {
         pub email: String,
     }
 
-    #[test]
+    #[test_log::test]
+    fn should() {
+        #[derive(Serialize, Deserialize, Debug)]
+        pub struct CustomClaims {
+            auth_time: i64,
+            name: String,
+            user_id: String,
+            email: String,
+        }
+        let key = RS256PublicKey::from_pem(r#"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt5N44H1mpb5Wlx/0e7Cd
+oKTY8xt+3yMby8BgNdagVNkeCkZ4pRbmQXRWNC7qn//Zaxx9dnzHbzGCul5W0RLf
+d3oB3PESwsrQh+oiXVEPTYhvUPQkX0vBfCXJtg/zY2mY1DxKOIiXnZ8PaK/7Sx0a
+MmvR//0Yy2a5dIAWCmjPsxn+PcGZOkVUm+D5bH1+ZStcA/68r4ZSPix7Szhgl1Ro
+Hb9Q6JSekyZqM0Qfwhgb7srZVXC/9/m5PEx9wMVNYpYJBrXhD5IQm9RzE9oJS8T+
+Ai+4/5mNTNXI8f1rrYgffWS4wf9cvsEihrvEg9867B2f98L7ux9Llle7jsHCtwgV
+1wIDAQAB
+-----END PUBLIC KEY-----"#).unwrap();
+        let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IjEifQ.eyJuYW1lIjoiQWRhIExvdmVsYWNlIiwiaXNzIjoiaHR0cHM6Ly9jaHJvbm9nZWFycy5jb20vdGVzdCIsImF1ZCI6InRlc3QiLCJhdXRoX3RpbWUiOjEwMCwidXNlcl9pZCI6InVpZDEyMyIsInN1YiI6InNidTEyMyIsImlhdCI6MjAwLCJleHAiOjUwMCwibmJmIjozMDAsImVtYWlsIjoiYWxvdmVsYWNlQGNocm9ub2dlYXJzLmNvbSJ9.eTQnwXrri_uY55fS4IygseBzzbosDM1hP153EZXzNlLH5s29kdlGt2mL_KIjYmQa8hmptt9RwKJHBtw6l4KFHvIcuif86Ix-iI2fCpqNnKyGZfgERV51NXk1THkgWj0GQB6X5cvOoFIdHa9XvgPl_rVmzXSUYDgkhd2t01FOjQeeT6OL2d9KdlQHJqAsvvKVc3wnaYYoSqv2z0IluvK93Tk1dUBU2yWXH34nX3GAVGvIoFoNRiiFfZwFlnz78G0b2fQV7B5g5F8XlNRdD1xmVZXU8X2-xh9LqRpnEakdhecciFHg0u6AyC4c00rlo_HBb69wlXajQ3R4y26Kpxn7HA";
+        let verification = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_secs(TIME_SAFE)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(100)),
+            ..Default::default()
+        };
+        key.verify_token::<CustomClaims>(jwt, Some(verification)).unwrap();
+    }
+
+    #[test_log::test]
     fn test_new_with_url() {
         let key_set = tokio_test::block_on(KeyStore::new_from(KEY_URL.to_owned())).unwrap();
 
         assert_eq!(KEY_URL, key_set.key_set_url());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_refresh_keys() {
         let key_set = tokio_test::block_on(KeyStore::new_from(KEY_URL.to_owned())).unwrap();
+        tracing::debug!("key_set: {:#?}", key_set);
 
         assert_eq!(KEY_URL, key_set.key_set_url());
         assert!(key_set.keys_len() > 0);
@@ -69,47 +96,48 @@ mod tests {
         assert!(key_set.key_by_id("1").is_some());
         assert!(key_set.key_by_id("2").is_none());
 
-        let result = key_set.verify_time(TOKEN, time_safe());
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_secs(TIME_SAFE)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(0)),
+            ..Default::default()
+        };
+
+        let result = key_set.verify::<CustomClaims>(TOKEN, Some(validation));
 
         let jwt = result.unwrap();
 
-        assert_eq!("https://chronogears.com/test", jwt.payload().iss().unwrap());
-        assert_eq!("Ada Lovelace", jwt.payload().get_str("name").unwrap());
-        assert_eq!("alovelace@chronogears.com", jwt.payload().get_str("email").unwrap());
+        assert_eq!("https://chronogears.com/test", jwt.issuer.unwrap());
+        assert_eq!("Ada Lovelace", jwt.custom.name);
+        assert_eq!("alovelace@chronogears.com", jwt.custom.email);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_add_key() {
-        let key = JwtKey::new("1", N, E);
+        let key = JwtKey::new_rsa256("1", N, E);
 
         let mut key_set = KeyStore::new();
 
         assert_eq!(0usize, key_set.keys_len());
 
-        key_set.add_key(&key);
+        key_set.add_key(key);
 
         assert_eq!(1usize, key_set.keys_len());
 
         let result = key_set.key_by_id("1");
 
         assert!(result.is_some());
-
-        let key = result.unwrap();
-
-        assert_eq!(N, key.n);
-        assert_eq!(E, key.e);
-        assert_eq!("1", key.kid);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_get_key() {
-        let key = JwtKey::new("1", N, E);
+        let key = JwtKey::new_rsa256("1", N, E);
 
         let mut key_set = KeyStore::new();
 
         assert_eq!(0usize, key_set.keys_len());
 
-        key_set.add_key(&key);
+        key_set.add_key(key);
 
         assert_eq!(1usize, key_set.keys_len());
 
@@ -122,174 +150,88 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_decode_custom_payload() {
-        let key = JwtKey::new("1", N, E);
-
-        let mut key_set = KeyStore::new();
-
-        key_set.add_key(&key);
-
-        let result = key_set.decode(TOKEN);
-
-        assert!(result.is_ok());
-
-        let jwt = result.unwrap();
-
-        let payload = jwt.payload().into::<TestPayload>().unwrap();
-
-        assert_eq!("https://chronogears.com/test", payload.iss);
-        assert_eq!("Ada Lovelace", payload.name);
-        assert_eq!("alovelace@chronogears.com", payload.email);
-    }
-
-    #[test]
-    fn test_decode_json_payload() {
-        let key = JwtKey::new("1", N, E);
-
-        let mut key_set = KeyStore::new();
-
-        key_set.add_key(&key);
-
-        let result = key_set.decode(TOKEN);
-
-        assert!(result.is_ok());
-
-        let jwt = result.unwrap();
-
-        assert_eq!("https://chronogears.com/test", jwt.payload().iss().unwrap());
-        assert_eq!("Ada Lovelace", jwt.payload().get_str("name").unwrap());
-        assert_eq!("alovelace@chronogears.com", jwt.payload().get_str("email").unwrap());
-    }
-
-    #[test]
+    #[test_log::test]
     fn test_verify() {
-        let key = JwtKey::new("1", N, E);
+        let key = JwtKey::new_rsa256("1", N, E);
 
         let mut key_set = KeyStore::new();
 
-        key_set.add_key(&key);
+        key_set.add_key(key);
 
-        let result = key_set.verify_time(TOKEN, time_safe());
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_secs(TIME_SAFE)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(100)),
+            ..Default::default()
+        };
 
-        assert!(result.is_ok());
+        let jwt = key_set.verify::<CustomClaims>(TOKEN, Some(validation)).unwrap();
 
-        let jwt = result.unwrap();
+        assert_eq!("https://chronogears.com/test", jwt.issuer.unwrap());
+        assert_eq!("Ada Lovelace", jwt.custom.name);
+        assert_eq!("alovelace@chronogears.com", jwt.custom.email);
 
-        assert_eq!("https://chronogears.com/test", jwt.payload().iss().unwrap());
-        assert_eq!("Ada Lovelace", jwt.payload().get_str("name").unwrap());
-        assert_eq!("alovelace@chronogears.com", jwt.payload().get_str("email").unwrap());
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_secs(TIME_NBF - 1)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(0)),
+            ..Default::default()
+        };
+        let result = key_set.verify::<CustomClaims>(TOKEN, Some(validation)); // early
 
-        let result = key_set.verify_time(TOKEN, time_nbf());
+        assert!(result.is_err(), "{:?}", result);
 
-        match result {
-            Ok(_) => panic!(),
-            Err(Error { msg: _, typ }) => {
-                assert_eq!(Type::Early, typ);
-            }
-        }
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_secs(TIME_EXP + 1)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(0)),
+            ..Default::default()
+        };
+        let result = key_set.verify::<CustomClaims>(TOKEN, Some(validation)); // late
 
-        let result = key_set.verify_time(TOKEN, time_exp());
-
-        match result {
-            Ok(_) => panic!(),
-            Err(Error { msg: _, typ }) => {
-                assert_eq!(Type::Expired, typ);
-            }
-        }
+        assert!(result.is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_verify_invalid_certificate() {
-        let key = JwtKey::new("1", N_INVALID, E);
+        let key = JwtKey::new_rsa256("1", N_INVALID, E);
 
         let mut key_set = KeyStore::new();
 
-        key_set.add_key(&key);
+        key_set.add_key(key);
 
-        let result = key_set.verify(TOKEN);
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            artificial_time: Some(UnixTimeStamp::from_ticks(TIME_SAFE)),
+            time_tolerance: Some(coarsetime::Duration::from_secs(0)),
+            ..Default::default()
+        };
+
+        let result = key_set.verify::<CustomClaims>(TOKEN, Some(validation));
 
         assert!(result.is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_verify_invalid_signature() {
-        let key = JwtKey::new("1", N, E);
+        let key = JwtKey::new_rsa256("1", N, E);
 
         let mut key_set = KeyStore::new();
 
-        key_set.add_key(&key);
+        key_set.add_key(key);
 
-        let result = key_set.verify(TOKEN_INV_CERT);
+        let validation = VerificationOptions {
+            allowed_issuers: Some(HashSet::from(["https://chronogears.com/test".to_owned()])),
+            time_tolerance: Some(coarsetime::Duration::from_secs(0)),
+            ..Default::default()
+        };
+
+        let result = key_set.verify::<CustomClaims>(TOKEN_INV_CERT, Some(validation));
 
         assert!(result.is_err());
-
-        // Should still be able to decode:
-        let result = key_set.decode(TOKEN_INV_CERT);
-
-        let jwt = result.unwrap();
-
-        assert_eq!("https://chronogears.com/test", jwt.payload().iss().unwrap());
-        assert_eq!("Ada Lovelace", jwt.payload().get_str("name").unwrap());
-        assert_eq!("alovelace@chronogears.com", jwt.payload().get_str("email").unwrap());
     }
 
-    #[test]
-    fn test_expired() {
-        let key_set = KeyStore::new();
-
-        let jwk = key_set.decode(TOKEN).unwrap();
-
-        let time = SystemTime::UNIX_EPOCH + Duration::new(TIME_EXP + 1, 0);
-
-        assert!(jwk.expired_time(time).unwrap());
-    }
-
-    #[test]
-    fn test_not_expired() {
-        let key_set = KeyStore::new();
-
-        let jwk = key_set.decode(TOKEN).unwrap();
-
-        let time = SystemTime::UNIX_EPOCH + Duration::new(TIME_EXP - 1, 0);
-
-        assert!(!jwk.expired_time(time).unwrap());
-    }
-
-    #[test]
-    fn test_nbf() {
-        let key_set = KeyStore::new();
-
-        let jwk = key_set.decode(TOKEN).unwrap();
-
-        let time = SystemTime::UNIX_EPOCH + Duration::new(TIME_NBF - 1, 0);
-
-        assert!(jwk.early_time(time).unwrap());
-    }
-
-    #[test]
-    fn test_not_nbf() {
-        let key_set = KeyStore::new();
-
-        let jwk = key_set.decode(TOKEN).unwrap();
-
-        let time = SystemTime::UNIX_EPOCH + Duration::new(TIME_NBF + 1, 0);
-
-        assert!(!jwk.early_time(time).unwrap());
-    }
-
-    #[test]
-    fn test_valid_exp() {
-        let key_set = KeyStore::new();
-
-        let jwk = key_set.decode(TOKEN).unwrap();
-
-        let time = SystemTime::UNIX_EPOCH + Duration::new(TIME_NBF - 1, 0);
-
-        assert!(jwk.early_time(time).unwrap());
-    }
-
-    #[test]
+    #[test_log::test]
     fn test_keys_expired() {
         let key_store = KeyStore::new();
 
@@ -300,10 +242,10 @@ mod tests {
 
         assert!(key_store.last_load_time().is_some());
         assert!(key_store.keys_expired().is_some());
-        assert_eq!(false, key_store.keys_expired().unwrap());
+        assert!(!key_store.keys_expired().unwrap());
     }
 
-    #[test]
+    #[test_log::test]
     fn test_should_refresh() {
         let mut key_store = KeyStore::new();
 
