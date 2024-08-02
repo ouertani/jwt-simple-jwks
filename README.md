@@ -2,7 +2,9 @@
 
 [![Docs](https://docs.rs/jwt-simple-jwks/badge.svg)](https://docs.rs/jwt-simple-jwks)
 [![Crates.io](https://img.shields.io/crates/v/jwt-simple-jwks.svg?maxAge=2592000)](https://crates.io/crates/jwt-simple-jwks)
-[![Build Status](https://travis-ci.com/seanpianka/jwks-client.svg?branch=master)](https://travis-ci.com/seanpianka/jwks-client) [![License:MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![License:Apache](https://img.shields.io/badge/License-Apache-yellow.svg)](https://opensource.org/licenses/Apache-2.0) ![Minimum rustc version](https://img.shields.io/badge/rustc-stable-success.svg)
+[![License:MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License:Apache](https://img.shields.io/badge/License-Apache-yellow.svg)](https://opensource.org/licenses/Apache-2.0) 
+![Minimum rustc version](https://img.shields.io/badge/rustc-stable-success.svg)
 
 jwt-simple-jwks is a library written in Rust to decode and validate JWT tokens using a JSON Web Key Store.
 
