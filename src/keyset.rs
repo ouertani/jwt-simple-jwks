@@ -258,9 +258,7 @@ impl KeyStore {
                 match alg {
                     _ if rs256 == alg => {
                         let public_key = RS256PublicKey::from_components(n.as_ref(), e.as_ref()).unwrap();
-                        dbg!(&public_key.to_pem());
                         tracing::debug!("{}", public_key.to_pem().unwrap());
-                        dbg!(&token);
                         let data = public_key.verify_token::<CustomClaims>(token, validation).map_err(|e| {
                             tracing::debug!("failed to verify token: {}", e);
                             Error {
