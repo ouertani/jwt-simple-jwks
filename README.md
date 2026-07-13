@@ -6,7 +6,9 @@
 [![License:Apache](https://img.shields.io/badge/License-Apache-yellow.svg)](https://opensource.org/licenses/Apache-2.0) 
 ![Minimum rustc version](https://img.shields.io/badge/rustc-stable-success.svg)
 
-jwt-simple-jwks is a library written in Rust to decode and validate JWT tokens using a JSON Web Key Store.
+** This is a fork of [jwt-simple-jwks](https://github.com/seanpianka/jwt-simple-jwks) targeting Azure JWKS endpoints. The original library does not support Azure JWKS endpoints. **
+
+azure-jwt-simple-jwks is a library written in Rust to decode and validate JWT tokens using a JSON Web Key Store.
 
 This JWKS client is compatible only with [jwt-simple](https://crates.io/crates/jwt-simple).
 
