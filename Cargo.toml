@@ -1,6 +1,6 @@
 [package]
 name = "azure-jwt-simple-jwks"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Jean-François Bilodeau <jfbilodeau@chronogears.com>", "Sean Pianka <sean@lunabit.io>", "Slim Ouertani <ouertani@gmail.com>"]
 edition = "2018"
 keywords = [ "jwt", "jwks", "jwk", "azure", "jwt-simple" ]

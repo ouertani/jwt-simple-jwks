@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "azure-jwt-simple-jwks"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "jwt-simple",
